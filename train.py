@@ -3,7 +3,10 @@ import torch
 from torch import nn, optim
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from models.resnet import ResNet
+import pandas as pd
+
+from models.simple_cnn import SimpleCNNModel, SimpleCNN
+from models.resnet import ResNetModel, ResNet
 from models.vit import ViT
 # Load the dataset
 ds = load_dataset("uoft-cs/cifar10")
@@ -46,7 +49,7 @@ train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
 test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
 
 
-def train(epochs, logging_step, lr, batch_size, model, device):
+def train(epochs, logging_step, lr, batch_size, model, device,model_name):
     # Initialize the model, loss function, and optimizer
     model.to(device)
     criterion = nn.CrossEntropyLoss()
@@ -56,22 +59,31 @@ def train(epochs, logging_step, lr, batch_size, model, device):
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
+
     # Training loop
     for epoch in range(epochs):
+        loss_list = []
+        acc_list = []
+        model.train()
         for i, (images, labels) in enumerate(train_loader):
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
+            loss_list.append([epoch+1, i+1, loss.item()])
             loss.backward()
             optimizer.step()
             if i % logging_step == 0:
                 print(f"Epoch :{epoch+1}, Step: {i+1}, Loss: {loss.item()}")
 
         print(f"Epoch {epoch+1}, Loss: {loss.item()}")
+        write_mode = 'w' if epoch == 0 else 'a'
+        pd.DataFrame(loss_list, columns=["Epoch", "Step", "Loss"]).to_csv(
+            f"{model_name}_loss.csv", index=False, header=write_mode == 'w', mode=write_mode)
 
         # Evaluation
         with torch.no_grad():
+            model.eval()
             correct = 0
             total = 0
             for images, labels in test_loader:
@@ -80,15 +92,15 @@ def train(epochs, logging_step, lr, batch_size, model, device):
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
+            acc_list.append([epoch+1, correct/total])
             print(
                 f"Accuracy of the network on the 10000 test images: {100 * correct / total}%")
+            pd.DataFrame(acc_list, columns=["Epoch", "Accuracy"]).to_csv(
+                f"{model_name}_acc.csv", index=False, header=write_mode == 'w', mode=write_mode)
 
 
 if __name__ == "__main__":
     import argparse
-    import sys
-    sys.path.append(".")
-    from models.simple_cnn import SimpleCNN
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=10)
@@ -106,14 +118,18 @@ if __name__ == "__main__":
     device = args.device
     model = None
     if args.model == "simple_cnn":
-        model = SimpleCNN()
+        model = SimpleCNNModel()
     elif args.model == "resnet":
-        model = ResNet()
-    elif args.model == "vit":
-        model = ViT()
-    else:
+        model = ResNetModel(channels=512, length=16)
+    elif args.model == "simple_vit":
+        model = ViT(cnn_model_cls=SimpleCNN,
+                    input_channels=64, input_len=64, heads=8)
+    elif args.model == "res_vit":
+        model = ViT(cnn_model_cls=ResNet,
+                    input_channels=512, input_len=16, heads=2)
+    elif args.model == "resnet_model":
         raise ValueError(f"Model {args.model} not found")
     # model parameters
     model_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {model_params}")
-    train(epochs, logging_step, lr, batch_size, model, device)
+    train(epochs, logging_step, lr, batch_size, model, device, args.model)
