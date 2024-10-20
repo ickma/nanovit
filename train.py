@@ -4,7 +4,7 @@ from torch import nn, optim
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from models.resnet import ResNet
-
+from models.vit import ViT
 # Load the dataset
 ds = load_dataset("uoft-cs/cifar10")
 
@@ -109,6 +109,8 @@ if __name__ == "__main__":
         model = SimpleCNN()
     elif args.model == "resnet":
         model = ResNet()
+    elif args.model == "vit":
+        model = ViT()
     else:
         raise ValueError(f"Model {args.model} not found")
     # model parameters
