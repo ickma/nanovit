@@ -46,10 +46,8 @@ train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
 test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
 
 
-def train(epochs, logging_step, lr, batch_size, model):
+def train(epochs, logging_step, lr, batch_size, model, device):
     # Initialize the model, loss function, and optimizer
-    device = torch.device(
-        "mps" if torch.backends.mps.is_available() else "cpu")
     model.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
@@ -98,12 +96,14 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--model", type=str)
     parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
 
     epochs = args.epochs
     logging_step = args.logging_step
     lr = args.lr
     batch_size = args.batch_size
+    device = args.device
     model = None
     if args.model == "simple_cnn":
         model = SimpleCNN()
@@ -114,4 +114,4 @@ if __name__ == "__main__":
     # model parameters
     model_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {model_params}")
-    train(epochs, logging_step, lr, batch_size, model)
+    train(epochs, logging_step, lr, batch_size, model, device)
