@@ -45,43 +45,24 @@ class TransformerEncoder(nn.Module):
         out = self.fc(x)+out
         feed_forward_out = self.feed_forward(out)
         out = feed_forward_out + out
-        return feed_forward_out
+        return out
 
-    def fold_conv(self, x):
-        batch_size, seq_len, channels = x.shape
-        side_length = int(seq_len ** 0.5)  # 4
-        x = x.view(batch_size, side_length, side_length, channels)
-        x = x.permute(0, 3, 1, 2)  # Change to (batch_size, channels, height, width)
-        return x
-    
-    def unfold_conv(self, x):
-        batch_size, channels, height, width = x.shape
-        x = x.permute(0, 2, 3, 1)  # Change to (batch_size, height, width, channels)
-        x = x.view(batch_size, height * width, channels)
-        return x
 
 class ViT(nn.Module):
     def __init__(self,  number_patches=16, patch_size=8, heads=8, num_classes=10):
         super(ViT, self).__init__()
         assert number_patches % heads == 0
 
-        self.transformer_input_channels = [64, 128, 256, 512, 512]
+        self.transformer_input_channels = [320, 64, 128, 256, 320,320]
 
         self.patch_size = patch_size
         self.heads = heads
         self.num_classes = num_classes
-        self.pre_conv_steps = 3  # 32=>16;16=>8;8=>4
-        channels = self.transformer_input_channels[0]
-        for step in range(self.pre_conv_steps):
-            conv = nn.Conv2d(3 if step == 0 else channels, channels,
-                             kernel_size=3, stride=1, padding=1)
-            bn = nn.BatchNorm2d(channels)
-            max_pool = nn.MaxPool2d(2)
-            self.add_module(f"conv{step}", conv)
-            self.add_module(f"bn{step}", bn)
-            self.add_module(f"max_pool{step}", max_pool)
 
-        
+        self.patch_embedding = nn.Linear(
+            patch_size*patch_size*3, self.transformer_input_channels[0],
+            bias=True)
+
         encoder_list = []
         for i in range(len(self.transformer_input_channels)-2):
             encoder_list.append(TransformerEncoder(
@@ -91,56 +72,38 @@ class ViT(nn.Module):
 
         self.pos_embedding = nn.Parameter(
             torch.randn(1, number_patches, self.transformer_input_channels[0]))
-        
-        self.post_convs=nn.Sequential(
-            nn.Conv2d(self.transformer_input_channels[-1], 128,
-                             kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(self.transformer_input_channels[-1]),
-            nn.MaxPool2d(2),
-            nn.Dropout(0.2),
-            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.MaxPool2d(2),
-            nn.Dropout(0.2),
-        )
 
         self.fc = nn.Linear(
-            self.transformer_input_channels[-1]*number_patches, num_classes)
-        self.softmax = nn.Softmax(dim=1)
+            self.transformer_input_channels[-1]*number_patches, num_classes, bias=True)
 
     def forward(self, x):
-        out = x
-        for step in range(self.pre_conv_steps):
-            out = self.get_submodule(f"conv{step}")(out)
-            out = self.get_submodule(f"bn{step}")(out)
-            out = F.relu(out)
-            out = F.dropout(out, 0.2)
-            out = self.get_submodule(f"max_pool{step}")(out)
 
-        # out = out.view(out.size(0), self.transformer_input_channels[0], -1)
-        out = self.unfold_conv(out)
-        # Transpose the tensor to change dimensions from (batch_size, channels, length) to (batch_size, length, channels)
-        out = out.transpose(1, 2)
+     
+        patches = self.gen_patches(x)
+
+        out = self.patch_embedding(patches)
 
         out = out + self.pos_embedding
         for encoder in self.encoders:
             out = encoder(out)
-            out = F.relu(out, 0.2)
-
+        
         out = torch.flatten(out, 1)
         out = self.fc(out)
         return out
-    
-    
-     def fold_conv(self, x):
-        batch_size, seq_len, channels = x.shape
-        side_length = int(seq_len ** 0.5)  # 4
-        x = x.view(batch_size, side_length, side_length, channels)
-        x = x.permute(0, 3, 1, 2)  # Change to (batch_size, channels, height, width)
-        return x
-    
-    def unfold_conv(self, x):
-        batch_size, channels, height, width = x.shape
-        x = x.permute(0, 2, 3, 1)  # Change to (batch_size, height, width, channels)
-        x = x.view(batch_size, height * width, channels)
-        return x
+
+    def gen_patches(self, x):
+        # Example input with batch size (batch_size, channels, height, width)
+        batch_size = x.size(0)  # Example batch size
+        # Step 1: Extract 8x8 patches using unfold
+        # Output shape: (batch_size, 3, 4, 4, 8, 8)
+        patches = x.unfold(2, self.patch_size, self.patch_size).unfold(
+            3, self.patch_size, self.patch_size)
+
+        # Step 2: Reshape the patches so that each 8x8 patch is flattened into a 1D vector
+        patches = patches.contiguous().view(batch_size, 3, -1,
+                                            self.patch_size * self.patch_size)  # Shape: (batch_size, 3, 16, 64)
+
+        # Step 3: Flatten the channel and spatial dimensions together
+        patches = patches.permute(0, 2, 1, 3).contiguous().view(
+            batch_size, -1, 3 * self.patch_size * self.patch_size)  # Shape: (batch_size, 16, 192)
+        return patches.to(x.device)
