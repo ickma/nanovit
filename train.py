@@ -1,3 +1,4 @@
+from datetime import datetime
 from datasets import load_dataset
 import torch
 from torch import nn, optim
@@ -15,11 +16,18 @@ ds = load_dataset("uoft-cs/cifar10")
 # Define the transform function
 
 
-def transform():
+def transform(eval=False):
+    if eval:
+        return transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize((32, 32)),
+            transforms.Normalize((0.4914, 0.4822, 0.4465),
+                                 (0.2023, 0.1994, 0.2010))
+        ])
     return transforms.Compose([
         transforms.RandomHorizontalFlip(),
-        transforms.Resize((72, 72)),
-        transforms.RandomCrop(64, padding=4),
+        transforms.Resize((36, 36)),
+        transforms.RandomCrop(32, padding=4),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465),
                              (0.2023, 0.1994, 0.2010))
@@ -42,23 +50,28 @@ class SimpleDataLoader:
 
 # Create train and test datasets
 train_ds = SimpleDataLoader(ds["train"], transform())
-test_ds = SimpleDataLoader(ds["test"], transform())
+test_ds = SimpleDataLoader(ds["test"], transform(eval=True))
 
 # Create data loaders
 train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
 test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
 
 
-def train(epochs, logging_step, lr, batch_size, model, device,model_name):
+def train(epochs, logging_step, lr, batch_size, model, device, model_name):
     # Initialize the model, loss function, and optimizer
     model.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.StepLR(
+        optimizer, step_size=epochs//5, gamma=0.5, verbose=True)
+    if model_name == "vit":
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs, eta_min=lr/100)
 
     # Create data loaders
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-
 
     # Training loop
     for epoch in range(epochs):
@@ -74,12 +87,15 @@ def train(epochs, logging_step, lr, batch_size, model, device,model_name):
             loss.backward()
             optimizer.step()
             if i % logging_step == 0:
-                print(f"Epoch :{epoch+1}, Step: {i+1}, Loss: {loss.item()}")
+                print(
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Epoch :{epoch+1}, Step: {i+1}, Loss: {loss.item()}")
 
-        print(f"Epoch {epoch+1}, Loss: {loss.item()}")
+        print(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Epoch {epoch+1}, Loss: {loss.item()}")
         write_mode = 'w' if epoch == 0 else 'a'
         pd.DataFrame(loss_list, columns=["Epoch", "Step", "Loss"]).to_csv(
             f"{model_name}_loss.csv", index=False, header=write_mode == 'w', mode=write_mode)
+        scheduler.step()
 
         # Evaluation
         with torch.no_grad():
@@ -94,7 +110,7 @@ def train(epochs, logging_step, lr, batch_size, model, device,model_name):
                 correct += (predicted == labels).sum().item()
             acc_list.append([epoch+1, correct/total])
             print(
-                f"Accuracy of the network on the 10000 test images: {100 * correct / total}%")
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Accuracy of the network on the {len(test_ds)} test images: {100 * correct / total}%")
             pd.DataFrame(acc_list, columns=["Epoch", "Accuracy"]).to_csv(
                 f"{model_name}_acc.csv", index=False, header=write_mode == 'w', mode=write_mode)
 
@@ -121,12 +137,9 @@ if __name__ == "__main__":
         model = SimpleCNNModel()
     elif args.model == "resnet":
         model = ResNetModel(channels=512, length=16)
-    elif args.model == "simple_vit":
-        model = ViT(cnn_model_cls=SimpleCNN,
-                    input_channels=64, input_len=64, heads=8)
-    elif args.model == "res_vit":
-        model = ViT(cnn_model_cls=ResNet,
-                    input_channels=512, input_len=16, heads=2)
+
+    elif args.model == "vit":
+        model = ViT()
     elif args.model == "resnet_model":
         raise ValueError(f"Model {args.model} not found")
     # model parameters
