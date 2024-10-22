@@ -4,34 +4,52 @@ from torch.nn import functional as F
 
 
 class Attention(nn.Module):
-    def __init__(self, input_channels, embed_size, heads):
+    def __init__(self,  head_dim, num_heads):
         super(Attention, self).__init__()
-        self.embed_size = embed_size
-        self.heads = heads
+        self.head_dim = head_dim
+        self.num_heads = num_heads
 
-        self.qkv_proj = nn.Linear(input_channels, 3 * embed_size)
-        self.o_proj = nn.Linear(embed_size, embed_size)
+        self.q_proj = nn.Linear(head_dim, head_dim)
+        self.k_proj = nn.Linear(head_dim, head_dim)
+        self.v_proj = nn.Linear(head_dim, head_dim)
+        self.o_proj = nn.Linear(head_dim, head_dim)
 
     def forward(self, x):
         batch_size, seq_len, _ = x.size()
-        qkv = self.qkv_proj(x).view(
-            batch_size, seq_len, self.heads, 3 * self.embed_size // self.heads)
-        q, k, v = qkv.chunk(3, dim=-1)
-        attn = (q @ k.transpose(-2, -1)) * (self.embed_size ** (-1/2))
-        attn = attn.softmax(dim=-1)
-        out = (attn @ v).view(batch_size, seq_len, self.embed_size)
-        out = self.o_proj(out)
-        # out = F.relu(out)
-        return out
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        # Reshape for multi-head attention
+        q = q.view(batch_size, seq_len, self.num_heads,
+                   self.head_dim//self.num_heads)
+        q = q.transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_heads,
+                   self.head_dim//self.num_heads)
+        k = k.transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_heads,
+                   self.head_dim//self.num_heads)
+        v = v.transpose(1, 2)
+
+        # Scaled dot-product attention
+        attn_scores = torch.matmul(
+            q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_output = torch.matmul(attn_weights, v)
+
+        # Concatenate heads and project
+        attn_output = attn_output.transpose(
+            1, 2).contiguous().view(batch_size, seq_len, self.head_dim)
+        output = self.o_proj(attn_output)
+        return output
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, input_channels, embed_size, heads):
+    def __init__(self,  embed_size, heads):
         super(TransformerEncoder, self).__init__()
-        self.attention = Attention(input_channels, embed_size, heads)
-        self.norm1 = nn.LayerNorm(input_channels)
+        self.attention = Attention(embed_size, heads)
+        self.norm1 = nn.LayerNorm(embed_size)
+        self.norm2 = nn.LayerNorm(embed_size)
         # convert x to embed_size for skip connection
-        self.fc = nn.Linear(input_channels, embed_size)
         self.feed_forward = nn.Sequential(
             nn.Linear(embed_size, 4 * embed_size),
             nn.ReLU(),
@@ -41,44 +59,43 @@ class TransformerEncoder(nn.Module):
         )
 
     def forward(self, x):
-        out = self.attention(self.norm1(x))
-        out = self.fc(x)+out
-        feed_forward_out = self.feed_forward(out)
-        out = feed_forward_out + out
+        out = x+self.attention(self.norm1(x))
+        out = self.norm2(out)
+        out = out+self.feed_forward(out)
         return out
 
 
 class ViT(nn.Module):
-    def __init__(self,  number_patches=16, patch_size=8, heads=8, num_classes=10):
+    def __init__(self,  number_patches=(32//4)**2, patch_size=4, heads=8,
+                 depth=5, emd_size=128, num_classes=10):
         super(ViT, self).__init__()
         assert number_patches % heads == 0
-
-        self.transformer_input_channels = [320, 64, 128, 256, 320,320]
 
         self.patch_size = patch_size
         self.heads = heads
         self.num_classes = num_classes
 
         self.patch_embedding = nn.Linear(
-            patch_size*patch_size*3, self.transformer_input_channels[0],
+            patch_size*patch_size*3, emd_size,
             bias=True)
 
         encoder_list = []
-        for i in range(len(self.transformer_input_channels)-2):
+        for i in range(depth):
             encoder_list.append(TransformerEncoder(
-                self.transformer_input_channels[i],
-                self.transformer_input_channels[i+1], heads))
+                emd_size, heads))
         self.encoders = nn.ModuleList(encoder_list)
 
         self.pos_embedding = nn.Parameter(
-            torch.randn(1, number_patches, self.transformer_input_channels[0]))
-
-        self.fc = nn.Linear(
-            self.transformer_input_channels[-1]*number_patches, num_classes, bias=True)
+            torch.randn(1, number_patches, emd_size))
+        self.mlp = nn.Sequential(
+            nn.Linear(emd_size*number_patches, 128),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, num_classes),
+        )
 
     def forward(self, x):
 
-     
         patches = self.gen_patches(x)
 
         out = self.patch_embedding(patches)
@@ -86,9 +103,9 @@ class ViT(nn.Module):
         out = out + self.pos_embedding
         for encoder in self.encoders:
             out = encoder(out)
-        
+
         out = torch.flatten(out, 1)
-        out = self.fc(out)
+        out = self.mlp(out)
         return out
 
     def gen_patches(self, x):
