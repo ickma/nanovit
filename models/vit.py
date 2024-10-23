@@ -3,6 +3,76 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
+class LinearAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super(LinearAttention, self).__init__()
+        assert embed_dim % num_heads == 0, "Embedding dimension must be divisible by number of heads"
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+
+        # Linear projections
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+
+        # Output projection
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+
+    def forward(self, x, key_padding_mask=None):
+        """
+        query, key, value: (batch_size, seq_len, embed_dim)
+        key_padding_mask: (batch_size, seq_len) -> True for padding tokens
+        """
+        batch_size, seq_len, _ = x.size()
+
+        # Linear projections
+        Q = self.q_proj(x)  # (batch_size, seq_len, embed_dim)
+        K = self.k_proj(x)
+        V = self.v_proj(x)
+
+        # Reshape for multi-head attention
+        # (batch_size, seq_len, num_heads, head_dim)
+        Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        K = K.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        V = V.view(batch_size, seq_len, self.num_heads, self.head_dim)
+
+        # Permute to get dimensions: (batch_size, num_heads, seq_len, head_dim)
+        Q = Q.permute(0, 2, 1, 3)
+        K = K.permute(0, 2, 1, 3)
+        V = V.permute(0, 2, 1, 3)
+
+        # Apply the feature map (e.g., elu + 1)
+        Q = F.elu(Q) + 1  # (batch_size, num_heads, seq_len, head_dim)
+        K = F.elu(K) + 1
+
+        if key_padding_mask is not None:
+            # key_padding_mask: (batch_size, seq_len) -> (batch_size, 1, seq_len, 1)
+            mask = key_padding_mask.unsqueeze(1).unsqueeze(3)
+            K = K.masked_fill(mask, 0)
+            V = V.masked_fill(mask, 0)
+
+        # Compute KV^T: (batch_size, num_heads, head_dim, head_dim)
+        KV = torch.einsum('bnhl,bnhm->bhnm', K, V)
+
+        # Compute normalizer: Z = Q sum(K)
+        Z = 1 / (torch.einsum('bnhl,bnhl->bnh', Q, K.sum(dim=2)) + 1e-6)
+        Z = Z.unsqueeze(-1)  # (batch_size, num_heads, seq_len, 1)
+
+        # Compute output: (batch_size, num_heads, seq_len, head_dim)
+        output = torch.einsum('bnhl,bhnm->bnhm', Q, KV)
+        output = output * Z
+
+        # Reshape and project
+        # (batch_size, seq_len, num_heads, head_dim)
+        output = output.permute(0, 2, 1, 3).contiguous()
+        output = output.view(batch_size, seq_len, self.embed_dim)
+        output = self.out_proj(output)
+
+        return output
+
+
 class Attention(nn.Module):
     def __init__(self,  head_dim, num_heads):
         super(Attention, self).__init__()
@@ -44,9 +114,12 @@ class Attention(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self,  embed_size, heads):
+    def __init__(self,  embed_size, heads, linear_attn=False):
         super(TransformerEncoder, self).__init__()
-        self.attention = Attention(embed_size, heads)
+        if linear_attn:
+            self.attention = LinearAttention(embed_size, heads)
+        else:
+            self.attention = Attention(embed_size, heads)
         self.norm1 = nn.LayerNorm(embed_size)
         self.norm2 = nn.LayerNorm(embed_size)
         # convert x to embed_size for skip connection
@@ -66,10 +139,11 @@ class TransformerEncoder(nn.Module):
 
 
 class ViT(nn.Module):
-    def __init__(self,  number_patches=(32//4)**2, patch_size=4, heads=8,
-                 depth=5, emd_size=256, num_classes=10):
+    def __init__(self,  img_size=32, patch_size=2, heads=8,
+                 depth=4, emd_size=240, num_classes=10, linear_attn=False):
         super(ViT, self).__init__()
-        assert number_patches % heads == 0
+        number_patches = (img_size//patch_size)**2
+        assert emd_size % heads == 0
 
         self.patch_size = patch_size
         self.heads = heads
@@ -82,7 +156,7 @@ class ViT(nn.Module):
         encoder_list = []
         for i in range(depth):
             encoder_list.append(TransformerEncoder(
-                emd_size, heads))
+                emd_size, heads, linear_attn))
         self.encoders = nn.ModuleList(encoder_list)
         self.cls_token = nn.Parameter(torch.randn(1, 1, emd_size))
         self.pos_embedding = nn.Parameter(
