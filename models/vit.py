@@ -67,7 +67,7 @@ class TransformerEncoder(nn.Module):
 
 class ViT(nn.Module):
     def __init__(self,  number_patches=(32//4)**2, patch_size=4, heads=8,
-                 depth=5, emd_size=128, num_classes=10):
+                 depth=5, emd_size=256, num_classes=10):
         super(ViT, self).__init__()
         assert number_patches % heads == 0
 
@@ -84,14 +84,12 @@ class ViT(nn.Module):
             encoder_list.append(TransformerEncoder(
                 emd_size, heads))
         self.encoders = nn.ModuleList(encoder_list)
-
+        self.cls_token = nn.Parameter(torch.randn(1, 1, emd_size))
         self.pos_embedding = nn.Parameter(
-            torch.randn(1, number_patches, emd_size))
-        self.mlp = nn.Sequential(
-            nn.Linear(emd_size*number_patches, 128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, num_classes),
+            torch.randn(1, number_patches+1, emd_size))
+        self.mlp_head = nn.Sequential(
+            nn.LayerNorm(emd_size),
+            nn.Linear(emd_size, num_classes)
         )
 
     def forward(self, x):
@@ -99,14 +97,15 @@ class ViT(nn.Module):
         patches = self.gen_patches(x)
 
         out = self.patch_embedding(patches)
+        out = torch.cat([self.cls_token.repeat(
+            out.size(0), 1, 1), out], dim=1)
 
         out = out + self.pos_embedding
         for encoder in self.encoders:
             out = encoder(out)
 
-        out = torch.flatten(out, 1)
-        out = self.mlp(out)
-        return out
+        logits = self.mlp_head(out[:, 0])
+        return logits
 
     def gen_patches(self, x):
         # Example input with batch size (batch_size, channels, height, width)
