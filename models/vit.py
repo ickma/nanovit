@@ -161,8 +161,14 @@ class ViT(nn.Module):
         self.cnn_proj = cnn_proj
         self.linear_proj = linear_proj
         if cnn_proj:
-            self.patch_embedding = nn.Conv2d(
-                3, emd_size, kernel_size=patch_size, stride=patch_size)
+            self.patch_embedding = nn.Sequential(
+                nn.Conv2d(3, 32, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(64, emd_size, kernel_size=3, padding=1),
+                nn.ReLU(),
+            )
         if linear_proj:
             self.patch_embedding = nn.Linear(
                 patch_size*patch_size*3, emd_size,

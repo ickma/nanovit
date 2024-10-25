@@ -146,7 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--img_size", type=int, default=64)
-    parser.add_argument("--embed_size", type=int, default=240)
+    parser.add_argument("--embed_size", type=int, default=128)
     args = parser.parse_args()
 
     epochs = args.epochs
@@ -166,11 +166,13 @@ if __name__ == "__main__":
         model = ViT(patch_size=img_size//16, linear_proj=True,
                     img_size=img_size, emd_size=embed_size)
     elif args.model == "vitl":  # vil, linear projection, linear attention
-        model = ViT(linear_attn=True, patch_size=img_size//16,
+        model = ViT(linear_attn=True, patch_size=1,
                     img_size=img_size, emd_size=embed_size)
-    elif args.model == "vitc":  # vix, linear projection, cnn projection
-        model = ViT(cnn_proj=True, patch_size=img_size//16,
+    elif args.model == "vitx":  # vix, linear projection, cnn projection
+        model = ViT(cnn_proj=True,
+                    linear_attn=True,
                     linear_proj=False,
+                    patch_size=1,
                     img_size=img_size, emd_size=embed_size)
     else:
         raise ValueError(f"Model {args.model} not found")
