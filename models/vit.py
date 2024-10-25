@@ -54,14 +54,15 @@ class LinearAttention(nn.Module):
             V = V.masked_fill(mask, 0)
 
         # Compute KV^T: (batch_size, num_heads, head_dim, head_dim)
-        KV = torch.einsum('bnhl,bnhm->bhnm', K, V)
+        KV = torch.einsum('bnhd,bnhe->bnde', K, V)
 
         # Compute normalizer: Z = Q sum(K)
-        Z = 1 / (torch.einsum('bnhl,bnhl->bnh', Q, K.sum(dim=2)) + 1e-6)
+        K_sum = K.sum(dim=2)  # (batch_size, num_heads, head_dim)
+        Z = 1 / (torch.einsum('bnhd,bnd->bnh', Q, K_sum) + 1e-6)
         Z = Z.unsqueeze(-1)  # (batch_size, num_heads, seq_len, 1)
 
         # Compute output: (batch_size, num_heads, seq_len, head_dim)
-        output = torch.einsum('bnhl,bhnm->bnhm', Q, KV)
+        output = torch.einsum('bnhd,bnde->bnhe', Q, KV)
         output = output * Z
 
         # Reshape and project
@@ -139,8 +140,15 @@ class TransformerEncoder(nn.Module):
 
 
 class ViT(nn.Module):
-    def __init__(self,  img_size=32, patch_size=2, heads=8,
-                 depth=4, emd_size=240, num_classes=10, linear_attn=False):
+    def __init__(self,  img_size=32,
+                 patch_size=2,
+                 heads=8,
+                 depth=4,
+                 emd_size=240,
+                 num_classes=10,
+                 linear_attn=False,
+                 linear_proj=True,
+                 cnn_proj=False):
         super(ViT, self).__init__()
         number_patches = (img_size//patch_size)**2
         assert emd_size % heads == 0
@@ -148,10 +156,17 @@ class ViT(nn.Module):
         self.patch_size = patch_size
         self.heads = heads
         self.num_classes = num_classes
+        self.linear_attn = linear_attn
 
-        self.patch_embedding = nn.Linear(
-            patch_size*patch_size*3, emd_size,
-            bias=True)
+        self.cnn_proj = cnn_proj
+        self.linear_proj = linear_proj
+        if cnn_proj:
+            self.patch_embedding = nn.Conv2d(
+                3, emd_size, kernel_size=patch_size, stride=patch_size)
+        if linear_proj:
+            self.patch_embedding = nn.Linear(
+                patch_size*patch_size*3, emd_size,
+                bias=True)
 
         encoder_list = []
         for i in range(depth):
@@ -167,10 +182,17 @@ class ViT(nn.Module):
         )
 
     def forward(self, x):
+        if self.cnn_proj:
+            out = self.patch_embedding(x)
 
-        patches = self.gen_patches(x)
+            # Change to (batch, h, w, dim)
+            out = out.permute(0, 2, 3, 1).contiguous()
+            # Flatten to (batch, h*w, dim)
+            out = out.view(x.size(0), -1, out.size(-1))
+        elif self.linear_proj:
+            patches = self.gen_patches(x)
+            out = self.patch_embedding(patches)
 
-        out = self.patch_embedding(patches)
         out = torch.cat([self.cls_token.repeat(
             out.size(0), 1, 1), out], dim=1)
 
